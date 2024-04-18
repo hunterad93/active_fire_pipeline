@@ -219,14 +219,17 @@ def FIRMS_GEOJSON_UPDATE(request):
     return 'Successfully processed and uploaded data', 200
 
 
-#function calling for local testing
-import os
 
-# Call the FIRMS_GEOJSON_UPDATE function with the API key from the environment variable
-FIRMS_GEOJSON_UPDATE({
-    'api_key': os.environ.get('FIRMS_API_KEY'),
-    'bbox': '-171,16,-66,74',  
-    'products': ["VIIRS_SNPP_NRT", "VIIRS_NOAA21_NRT", "VIIRS_NOAA20_NRT"],  
-    'min_cluster_size': 25,  
-    'required_high_confidence': 1, 
-})
+### COMMENT THIS FINAL SECTION IN TO TEST LOCALLY ###
+
+# #function calling for local testing
+# import os
+
+# # Call the FIRMS_GEOJSON_UPDATE function with the API key from the environment variable
+# FIRMS_GEOJSON_UPDATE({
+#     'api_key': os.environ.get('FIRMS_API_KEY'),
+#     'bbox': '-171,16,-66,74',  
+#     'products': ["VIIRS_SNPP_NRT", "VIIRS_NOAA21_NRT", "VIIRS_NOAA20_NRT"],  
+#     'min_cluster_size': 25,  
+#     'required_high_confidence': 1, 
+# })
