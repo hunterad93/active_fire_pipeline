@@ -165,7 +165,7 @@ def upload_to_bigquery(cluster_info):
     # Initialize a BigQuery client
     client = bigquery.Client()
 
-    # Specify your dataset and table
+    # Specify dataset and table
     dataset_id = 'geojson_predictions'
     table_id = 'geoms'
 
@@ -199,7 +199,8 @@ def FIRMS_GEOJSON_UPDATE(request):
         request_json = request
     else:
         request_json = request.get_json(silent=True)
-        
+
+    # Grab args from json    
     api_key = request_json.get('api_key')
     bbox = request_json.get('bbox', 'world')
     products = request_json.get('products', ["VIIRS_SNPP_NRT", "VIIRS_NOAA21_NRT", "VIIRS_NOAA20_NRT"])
@@ -217,6 +218,7 @@ def FIRMS_GEOJSON_UPDATE(request):
     filtered_combined_clusters = filter_clusters_with_product_confidence(clustered_combined_gdf, min_cluster_size=min_cluster_size, required_high_confidence_per_product=required_high_confidence)
     # Create a polygon for each cluster
     cluster_info = create_cluster_polygons(filtered_combined_clusters)
+    # Upload rows to GBQ
     upload_to_bigquery(cluster_info)
 
     return 'Successfully processed and uploaded data', 200
