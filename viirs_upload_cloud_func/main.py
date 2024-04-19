@@ -132,61 +132,66 @@ def create_cluster_polygons(gdf):
     """
     Given a GeoDataFrame of clustered fire points, create a polygon for each cluster
     :param gdf: GeoDataFrame of fire points with 'label' column indicating the cluster each point belongs to
-    :return: Tuple containing the most frequently occurring acquisition date and a GeoJSON string where each feature represents a cluster and the geometry property contains the polygon around the cluster
+    :return: List of dictionaries with acquisition datetime, WKT, and GeoJSON strings for each cluster
     """
+    print('creating polygon')
     # Group the GeoDataFrame by the cluster labels
     grouped = gdf.groupby('label')
 
-    # For each cluster, create a MultiPoint object from the fire points, then create a polygon from the convex hull of the points
-    polygons = grouped.apply(lambda df: MultiPoint(df.geometry.tolist()).convex_hull)
+    cluster_info = []
 
-    # Create a new GeoDataFrame from the polygons
-    polygon_gdf = gpd.GeoDataFrame({'geometry': polygons})
+    for label, group in grouped:
+        if label == -1:  # Skip noise points
+            continue
+        # Create a MultiPoint object from the fire points, then create a polygon from the convex hull of the points
+        polygon = MultiPoint(group.geometry.tolist()).convex_hull
+        # Convert the most frequently occurring acquisition date to datetime
+        acq_datetime = pd.to_datetime(group['datetime'].mode()[0])
+        # Prepare the dictionary
+        cluster_info.append({
+            'acq_datetime': acq_datetime,
+            'fire_wkt': polygon.wkt,
+            'fire_geojson': json.loads(gpd.GeoSeries([polygon]).to_json())['features'][0]['geometry']
+        })
 
-    # Convert the GeoDataFrame to a GeoJSON string
-    polygon_geojson = polygon_gdf.to_json()
+    return cluster_info
 
-    # Convert the most frequently occurring acquisition date to datetime
-    most_common_acq_date = pd.to_datetime(gdf['datetime'].mode()[0])
-
-    return most_common_acq_date, polygon_geojson
-
-def upload_to_bigquery(acq_date, polygon_geojson):
+def upload_to_bigquery(cluster_info):
     """
-    Uploads the polygon GeoJSON data to BigQuery.
+    Uploads each polygon data as a separate row to BigQuery.
 
-    :param acq_date: The most frequently occurring acquisition date. There will only ever be two dates in the GDF.
-    :param polygon_geojson: The GeoJSON string where each feature represents a cluster and the geometry property contains the polygon around the cluster.
+    :param cluster_info: List of dictionaries with acquisition datetime, WKT, and GeoJSON strings for each cluster.
     """
     # Initialize a BigQuery client
     client = bigquery.Client()
 
     # Specify your dataset and table
-    dataset_id = 'popex_polygons'
-    table_id = 'viirs_mask'
+    dataset_id = 'geojson_predictions'
+    table_id = 'geoms'
 
     # Get the table
     table = client.dataset(dataset_id).table(table_id)
     table = client.get_table(table)
 
-    # Convert acq_date to string for bigquery
-    acq_date = acq_date.strftime('%Y-%m-%dT%H:%M:%SZ')
+    rows_to_insert = []
 
-    # Prepare the row to be inserted
-    row = {
-        'prediction_date': acq_date,
-        'geojson_mask': polygon_geojson,
-        'datetime_added': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),  # UTC timestamp of the current moment
-    }
+    for cluster in cluster_info:
+        row = {
+            'acq_datetime': cluster['acq_datetime'].strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'datetime_added': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'fire_wkt': cluster['fire_wkt'],
+            'fire_geojson': json.dumps(cluster['fire_geojson']),
+        }
+        rows_to_insert.append(row)
 
-    # Insert the row
-    errors = client.insert_rows_json(table, [row])
+    # Insert the rows
+    errors = client.insert_rows_json(table, rows_to_insert)
 
     # Check if any errors occurred
     if errors:
         print('Errors:', errors)
     else:
-        print('Row inserted successfully.')
+        print(f'{len(rows_to_insert)} rows inserted successfully.')
 
 def FIRMS_GEOJSON_UPDATE(request):
     # Check if request is a dictionary for local testing or a Flask request object
@@ -211,10 +216,8 @@ def FIRMS_GEOJSON_UPDATE(request):
     # Filter out small clusters and clusters with too few points or no high confidence point
     filtered_combined_clusters = filter_clusters_with_product_confidence(clustered_combined_gdf, min_cluster_size=min_cluster_size, required_high_confidence_per_product=required_high_confidence)
     # Create a polygon for each cluster
-    acq_date, polygon_geojson = create_cluster_polygons(filtered_combined_clusters)
-
-    # Upload the generated polygon GeoJSON to BigQuery
-    upload_to_bigquery(acq_date, polygon_geojson)
+    cluster_info = create_cluster_polygons(filtered_combined_clusters)
+    upload_to_bigquery(cluster_info)
 
     return 'Successfully processed and uploaded data', 200
 
