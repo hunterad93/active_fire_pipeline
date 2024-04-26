@@ -128,11 +128,11 @@ def filter_clusters_with_product_confidence(gdf, min_cluster_size, required_high
 
     return gdf
 
-def create_cluster_polygons(gdf):
+def create_cluster_polygons(gdf, buffer_size_degrees):
     """
-    Given a GeoDataFrame of clustered fire points, create a polygon for each cluster
+    Given a GeoDataFrame of clustered fire points, create a polygon for each cluster and a buffered polygon around it.
     :param gdf: GeoDataFrame of fire points with 'label' column indicating the cluster each point belongs to
-    :return: List of dictionaries with acquisition datetime, WKT, and GeoJSON strings for each cluster
+    :return: List of dictionaries with acquisition datetime, WKT, GeoJSON strings for each cluster, and buffered polygon
     """
     print('creating polygon')
     # Group the GeoDataFrame by the cluster labels
@@ -145,13 +145,17 @@ def create_cluster_polygons(gdf):
             continue
         # Create a MultiPoint object from the fire points, then create a polygon from the convex hull of the points
         polygon = MultiPoint(group.geometry.tolist()).convex_hull
+        # Buffer the polygon by 0.1 degrees
+        buffered_polygon = polygon.buffer(buffer_size_degrees)
         # Convert the most frequently occurring acquisition date to datetime
         acq_datetime = pd.to_datetime(group['datetime'].mode()[0])
         # Prepare the dictionary
         cluster_info.append({
             'acq_datetime': acq_datetime,
             'fire_wkt': polygon.wkt,
-            'fire_geojson': json.loads(gpd.GeoSeries([polygon]).to_json())['features'][0]['geometry']
+            'fire_geojson': json.loads(gpd.GeoSeries([polygon]).to_json())['features'][0]['geometry'],
+            'buffered_fire_wkt': buffered_polygon.wkt,
+            'buffered_fire_geojson': json.loads(gpd.GeoSeries([buffered_polygon]).to_json())['features'][0]['geometry']
         })
 
     return cluster_info
@@ -167,7 +171,7 @@ def upload_to_bigquery(cluster_info):
 
     # Specify dataset and table
     dataset_id = 'geojson_predictions'
-    table_id = 'geoms'
+    table_id = 'geoms2'
 
     # Get the table
     table = client.dataset(dataset_id).table(table_id)
@@ -181,6 +185,8 @@ def upload_to_bigquery(cluster_info):
             'datetime_added': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
             'fire_wkt': cluster['fire_wkt'],
             'fire_geojson': json.dumps(cluster['fire_geojson']),
+            'buffered_fire_wkt': cluster['buffered_fire_wkt'],
+            'buffered_fire_geojson': json.dumps(cluster['buffered_fire_geojson']),
         }
         rows_to_insert.append(row)
 
@@ -202,10 +208,11 @@ def FIRMS_GEOJSON_UPDATE(request):
 
     # Grab args from json    
     api_key = request_json.get('api_key')
+    buffer_size_degrees = request_json.get('buffer_size_degrees', 0.02)  # Default buffer size if not specified
     bbox = request_json.get('bbox', 'world')
     products = request_json.get('products', ["VIIRS_SNPP_NRT", "VIIRS_NOAA21_NRT", "VIIRS_NOAA20_NRT"])
-    min_cluster_size = request_json.get('min_cluster_size', 25)  # Default value set to 40 if not specified
-    required_high_confidence = request_json.get('required_high_confidence', 1)  # Default value set to 3 if not specified
+    min_cluster_size = request_json.get('min_cluster_size', 3)  # Default value set to 3 (smaller fires) if not specified
+    required_high_confidence = request_json.get('required_high_confidence', 1)  # Default value set to 1 if not specified
 
     # Retrieve data using the provided API key, bounding box, and list of products
     gdfs = [get_firms_data(api_key=api_key, bbox=bbox, product=product) for product in products]
@@ -217,7 +224,7 @@ def FIRMS_GEOJSON_UPDATE(request):
     # Filter out small clusters and clusters with too few points or no high confidence point
     filtered_combined_clusters = filter_clusters_with_product_confidence(clustered_combined_gdf, min_cluster_size=min_cluster_size, required_high_confidence_per_product=required_high_confidence)
     # Create a polygon for each cluster
-    cluster_info = create_cluster_polygons(filtered_combined_clusters)
+    cluster_info = create_cluster_polygons(filtered_combined_clusters, buffer_size_degrees)
     # Upload rows to GBQ
     upload_to_bigquery(cluster_info)
 
@@ -227,14 +234,15 @@ def FIRMS_GEOJSON_UPDATE(request):
 
 ### COMMENT THIS FINAL SECTION IN TO TEST LOCALLY ###
 
-# #function calling for local testing
-# import os
+#function calling for local testing
+import os
 
-# # Call the FIRMS_GEOJSON_UPDATE function with the API key from the environment variable
-# FIRMS_GEOJSON_UPDATE({
-#     'api_key': os.environ.get('FIRMS_API_KEY'),
-#     'bbox': '-171,16,-66,74',  
-#     'products': ["VIIRS_SNPP_NRT", "VIIRS_NOAA21_NRT", "VIIRS_NOAA20_NRT"],  
-#     'min_cluster_size': 25,  
-#     'required_high_confidence': 1, 
-# })
+# Call the FIRMS_GEOJSON_UPDATE function with the API key from the environment variable
+FIRMS_GEOJSON_UPDATE({
+    'api_key': os.environ.get('FIRMS_API_KEY'),
+    'bbox': '-171,16,-66,74',  
+    'products': ["VIIRS_SNPP_NRT", "VIIRS_NOAA21_NRT", "VIIRS_NOAA20_NRT"], 
+    'buffer_size_degrees': 0.02,
+    'min_cluster_size': 3,  
+    'required_high_confidence': 1, 
+})
